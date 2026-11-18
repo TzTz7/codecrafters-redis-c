@@ -5,6 +5,7 @@
 #include <netinet/ip.h>
 #include <string.h>
 #include <errno.h>
+#include <threads.h>
 #include <unistd.h>
 
 int main() {
@@ -51,9 +52,22 @@ int main() {
 	int client_fd = accept(server_fd, (struct sockaddr *) &client_addr, &client_addr_len);
 	printf("Client connected\n");
 	
-	const char *response = "+PONG\r\n";
-	send(client_fd, response, strlen(response), 0);
 
+
+	char buffer[1024];
+	const char *response = "+PONG\r\n";
+	while(1) {
+		ssize_t bytes_read = recv(client_fd, buffer, sizeof(buffer), 0);
+		if(bytes_read <= 0){
+			printf("Connect close.\n");
+			break;
+		}
+		
+		send(client_fd, response, strlen(response), 0);
+	}
+
+
+	
 	close(server_fd);
 	
 	return 0;
