@@ -21,6 +21,13 @@ typedef struct {
 	struct sockaddr_in client_addr;
 } ThreadArgs;
 
+typedef struct {
+	char *name;
+	char *value;
+} KV;
+
+KV* g_kvs = NULL;
+
 int create_server_socket() {
 	int server_fd;
 	server_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -196,8 +203,7 @@ void dispatch(const char **argv, size_t *argvlen, int argc, int fd)
     // 命令名大小写不敏感，用 strncasecmp 带长度比较
     if (strncasecmp(argv[0], "PING", argvlen[0]) == 0 && argvlen[0] == 4) {
         send(fd, "+PONG\r\n", 7, 0);
-    }
-    else if (strncasecmp(argv[0], "ECHO", argvlen[0]) == 0 && argvlen[0] == 4) {
+    }else if (strncasecmp(argv[0], "ECHO", argvlen[0]) == 0 && argvlen[0] == 4) {
         if (argc < 2) {
             send(fd, "-ERR wrong number of arguments\r\n", 33, 0);
             return;
@@ -208,8 +214,45 @@ void dispatch(const char **argv, size_t *argvlen, int argc, int fd)
         send(fd, header, hlen, 0);
         send(fd, argv[1], argvlen[1], 0);       // payload 二进制安全，带长度发
         send(fd, "\r\n", 2, 0);
-    }
-    else {
+	}else if (strncasecmp(argv[0], "SET", argvlen[0]) == 0 && argvlen[0] == 3) {
+        if (argc < 3) {
+            send(fd, "-ERR wrong number of arguments\r\n", 33, 0);
+            return;
+        }
+		int slot = -1;
+		for(int i = 0;i < 1024;i ++) {
+			if(g_kvs[i].name == NULL){ slot = i; break; }
+		}
+		if (slot == -1) {
+			send(fd, "-ERR storage full\r\n", 20, 0);
+			return;
+    	}
+		g_kvs[slot].name = malloc(argvlen[1]);
+		g_kvs[slot].value = malloc(argvlen[2]);
+		memcpy(g_kvs[slot].name, argv[1], argvlen[1]);
+		memcpy(g_kvs[slot].value, argv[2], argvlen[2]);
+		send(fd, "+OK\r\n", 5, 0);
+	}else if(strncasecmp(argv[0], "GET", argvlen[0]) == 0 && argvlen[0] == 3){
+		if (argc < 2) {
+            send(fd, "-ERR wrong number of arguments\r\n", 33, 0);
+            return;
+        }
+		for(int i = 0;i < 1024;i ++){
+			//丐版假设不删key，碰到null就停止
+			if(g_kvs[i].name == NULL) break;
+			//找到了
+			if(memcmp(g_kvs[i].name, argv[1], argvlen[1]) == 0 && strlen(g_kvs[i].name) == argvlen[1]){
+				char header[32];
+				int hlen = snprintf(header, sizeof(header), "$%zu\r\n", argvlen[1]);
+				send(fd, header, hlen, 0);
+				send(fd, g_kvs[i].value, strlen(g_kvs[i].value), 0);
+				send(fd, "\r\n", 2, 0);
+				return;
+			}
+		}
+		//没找到
+		send(fd, "$-1\r\n", 5, 0);
+	}else {
         // 未知命令兜底（COMMAND DOCS / HELLO 都走这里）
         char err[128];
         int n = snprintf(err, sizeof(err), "-ERR unknown command '%.*s'\r\n",
@@ -236,12 +279,11 @@ void* handle_client(void *arg){
 		// 客户端读
 		ssize_t bytes_read = recv(args->client_fd, buffer + len, sizeof(buffer) - len, 0);
 		if(bytes_read < 0){
-			if(errno == EINTR) continue;
-			perror("recv failed");  // 真正的错误（如 EAGAIN、ECONNRESET
-			break;
+			// 真正的错误（如 EAGAIN、ECONNRESET
+			if(errno == EINTR) continue; perror("recv failed");break;
 		}else if(bytes_read == 0){
-			printf("Client disconnected gracefully\n");  // 客户端主动关闭
-			break;
+			// 客户端主动关闭
+			printf("Client disconnected gracefully\n");break;
 		}
 		len += bytes_read;
 
@@ -252,18 +294,9 @@ void* handle_client(void *arg){
 			if (r == PARSE_INCOMPLETE) break;     // 等下次 recv
             if (r == PARSE_ERROR) goto out;        // 协议错，关连接
 			dispatch(argv, argvlen, argc, args->client_fd);  // ← 必须在 memmove 前
-
 			memmove(buffer, buffer + pos, len - pos);    // 移走已消费的
 			len -= pos;
 		}
-		// printf("buffer:%s",buffer);
-		// // 客户端发 TODO:检查send返回值
-		// ssize_t n = send(args->client_fd, response, strlen(response), 0);
-		// if(n < 0){
-		// 	if(errno == EINTR) continue;
-		// 	perror("send failed");
-		// 	break;
-		// }
 		if (len == sizeof(buffer)) break;
 	}
 	out:
@@ -273,6 +306,14 @@ void* handle_client(void *arg){
 }
 
 int main() {
+
+	//在这里我要准备一些空间用于KV
+	g_kvs = malloc(1024*sizeof(KV));
+	if(g_kvs == NULL){
+		fprintf(stderr, "malloc kv failed");
+		return EXIT_FAILURE;
+	}
+
 	// Disable output buffering
 	setbuf(stdout, NULL);
 	setbuf(stderr, NULL);
