@@ -243,7 +243,7 @@ void dispatch(const char **argv, size_t *argvlen, int argc, int fd)
 			//找到了
 			if(memcmp(g_kvs[i].name, argv[1], argvlen[1]) == 0 && strlen(g_kvs[i].name) == argvlen[1]){
 				char header[32];
-				int hlen = snprintf(header, sizeof(header), "$%zu\r\n", argvlen[1]);
+				int hlen = snprintf(header, sizeof(header), "$%zu\r\n", strlen(argv[1]));
 				send(fd, header, hlen, 0);
 				send(fd, g_kvs[i].value, strlen(g_kvs[i].value), 0);
 				send(fd, "\r\n", 2, 0);
